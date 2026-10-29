@@ -62,7 +62,7 @@ class XWindowSurfaceView(
         val bitmap = latestFrame ?: return
         val canvas: Canvas = holder.lockCanvas() ?: return
         try {
-            canvas.drawBitmap(bitmap, null, Rect(0, 0, width, height))
+            canvas.drawBitmap(bitmap, null, Rect(0, 0, width, height), null)
         } finally {
             holder.unlockCanvasAndPost(canvas)
         }
