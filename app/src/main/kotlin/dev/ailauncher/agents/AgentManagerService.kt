@@ -8,10 +8,6 @@ import android.content.Intent
 import android.os.Binder
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
 
 /**
  * Foreground service that owns the proot Arch runtime and keeps agent CLI sessions alive
@@ -20,7 +16,6 @@ import kotlinx.coroutines.launch
  */
 class AgentManagerService : Service() {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private lateinit var runtime: ProotRuntime
     private val sessions = mutableMapOf<String, Process>()
 
@@ -36,12 +31,17 @@ class AgentManagerService : Service() {
 
     override fun onBind(intent: Intent?): IBinder = LocalBinder()
 
+    /**
+     * Starts [agentId]'s CLI process if it isn't already running. Idempotent and synchronous
+     * so callers (e.g. [dev.ailauncher.agents.chat.AgentChatController.send]) can call this on
+     * every chat turn and immediately follow with [sendInput] without a race: calling it again
+     * for an already-running session is a no-op rather than spawning a second process that
+     * orphans the first.
+     */
     fun startAgentSession(agentId: String, workingDir: String, onOutput: (String) -> Unit) {
+        if (sessions[agentId]?.isAlive == true) return
         val spec = AgentRegistry.byId(agentId) ?: return
-        scope.launch {
-            val process = runtime.launchAgent(spec, workingDir, onOutput)
-            sessions[agentId] = process
-        }
+        sessions[agentId] = runtime.launchAgent(spec, workingDir, onOutput)
     }
 
     fun stopAgentSession(agentId: String) {
