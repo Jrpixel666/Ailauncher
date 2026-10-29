@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Launcher + widget hosting -->
+    <uses-permission android:name="android.permission.BIND_APPWIDGET" tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+
+    <!-- proot-distro Arch rootfs lives in app-private storage; no root/system permissions requested -->
+
+    <application
+        android:name=".AiLauncherApp"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:theme="@style/Theme.AiLauncher"
+        android:supportsRtl="true">
+
+        <!-- Home screen replacement -->
+        <activity
+            android:name=".launcher.LauncherActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:stateNotNeeded="true"
+            android:screenOrientation="unspecified"
+            android:configChanges="orientation|keyboardHidden|screenSize|screenLayout">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- First-run onboarding: installs proot-distro Arch rootfs + chosen AI agent CLIs -->
+        <activity
+            android:name=".setup.SetupWizardActivity"
+            android:exported="false"
+            android:theme="@style/Theme.AiLauncher" />
+
+        <!-- One instance of this Activity is launched per bridged Linux GUI top-level window.
+             documentLaunchMode="always" + distinct taskAffinity-per-window (set at runtime via
+             ActivityOptions/Intent.FLAG_ACTIVITY_NEW_DOCUMENT + android:taskAffinity "") makes
+             each window show up as its own independent entry in Android Recents, the same trick
+             Termux:X11 / Winlator use to surface proot'd Linux GUI apps as native tasks. -->
+        <activity
+            android:name=".window.LinuxWindowActivity"
+            android:exported="false"
+            android:taskAffinity=""
+            android:documentLaunchMode="always"
+            android:excludeFromRecents="false"
+            android:autoRemoveFromRecents="true"
+            android:resizeableActivity="true"
+            android:configChanges="orientation|keyboardHidden|screenSize|screenLayout|density"
+            android:theme="@style/Theme.AiLauncher.NoBar" />
+
+        <!-- Background orchestrator: supervises the proot Arch environment, the X11 bridge
+             (termux-x11 style), and the AI agent CLI processes. -->
+        <service
+            android:name=".agents.AgentManagerService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Runs local AI coding agent CLIs and the Linux desktop bridge for the launcher" />
+        </service>
+
+        <service
+            android:name=".window.WindowBridgeService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Bridges proot Linux GUI windows into Android tasks" />
+        </service>
+
+        <!-- Widget host picker glue -->
+        <activity
+            android:name=".widgets.WidgetPickerActivity"
+            android:exported="false"
+            android:theme="@style/Theme.AiLauncher" />
+
+    </application>
+</manifest>

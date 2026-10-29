@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">AiLauncher</string>
+    <string name="setup_title">Welcome to AiLauncher</string>
+    <string name="setup_subtitle">Set up your on-device Arch Linux environment and pick the AI agent CLIs you want installed.</string>
+    <string name="setup_install">Install selected</string>
+    <string name="setup_skip">Skip setup</string>
+</resources>

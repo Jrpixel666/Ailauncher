@@ -1,0 +1,4 @@
+<resources>
+    <style name="Theme.AiLauncher" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.AiLauncher.NoBar" parent="android:Theme.Material.NoActionBar.Fullscreen" />
+</resources>
