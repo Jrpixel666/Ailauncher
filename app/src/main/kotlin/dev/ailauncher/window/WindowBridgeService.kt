@@ -14,41 +14,47 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
 /**
- * Bridges the Xvfb display running inside the proot Arch rootfs onto the Android side.
+ * Bridges `ailauncher-compositor` (a minimal wlroots-based Wayland compositor + XWayland host,
+ * see assets/compositor/ailauncher-compositor.c) running inside the proot Arch rootfs onto the
+ * Android side.
  *
  * Mechanism (same family of trick as Termux:X11 / Winlator, adapted to avoid any NDK/JNI):
- *  1. Xvfb + icewm run inside the rootfs as the virtual display + window manager.
- *  2. [XWindowWatcher] polls for top-level windows via `xdotool` and, per new window,
- *     starts a dedicated `x11vnc -id <window>` server that exports just that one
- *     window's framebuffer on its own loopback port.
- *  3. It then starts one [dev.ailauncher.window.LinuxWindowActivity] for that window,
- *     using FLAG_ACTIVITY_NEW_DOCUMENT + android:taskAffinity="" so the system gives it
- *     its own independent entry in Recents instead of stacking it onto AiLauncher's own
- *     task.
- *  4. That Activity's [dev.ailauncher.window.XWindowSurfaceView] speaks RFB (a small
- *     pure-Kotlin client, [dev.ailauncher.window.rfb.RfbClient]) to that one port to
- *     render the window and forward touch input — so from the user's point of view the
- *     Linux GUI app behaves like any other native Android app/task.
+ *  1. [ProotRuntime.startCompositor] runs the compositor on wlroots' headless backend (no
+ *     DRM/GPU access needed under proot) with XWayland enabled for X11 app compatibility.
+ *  2. The compositor itself — not a poller on this side — reports every top-level window's
+ *     lifecycle as a plain stdout line (`AILAUNCHER_EVENT ...`), because it gives each bridged
+ *     window a dedicated headless output of its own rather than one shared desktop. This
+ *     service forwards those lines into [CompositorEventWatcher.onCompositorLine].
+ *  3. Per new window, the watcher starts a dedicated `wayvnc -o <output>` server that exports
+ *     just that one output's framebuffer on its own loopback port
+ *     ([ProotRuntime.exportOutputAsVnc]) — the Wayland-side equivalent of `x11vnc -id`.
+ *  4. It then starts one [LinuxWindowActivity] for that window, using FLAG_ACTIVITY_NEW_DOCUMENT
+ *     + android:taskAffinity="" so the system gives it its own independent entry in Recents
+ *     instead of stacking it onto AiLauncher's own task.
+ *  5. That Activity's [XWindowSurfaceView] speaks RFB (a small pure-Kotlin client,
+ *     [dev.ailauncher.window.rfb.RfbClient]) to that one port to render the window and forward
+ *     touch input — so from the user's point of view the Linux GUI app behaves like any other
+ *     native Android app/task.
  *
- * This service just owns the lifecycle of the X server + watcher; it does not render
+ * This service just owns the lifecycle of the compositor + watcher; it does not render
  * anything itself.
  */
 class WindowBridgeService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private lateinit var runtime: ProotRuntime
-    private lateinit var watcher: XWindowWatcher
+    private lateinit var watcher: CompositorEventWatcher
+    private var compositorProcess: Process? = null
 
     override fun onCreate() {
         super.onCreate()
         runtime = ProotRuntime(applicationContext)
-        watcher = XWindowWatcher(applicationContext)
+        watcher = CompositorEventWatcher(applicationContext, runtime)
         startForeground(NOTIFICATION_ID, buildNotification())
 
         if (runtime.isInstalled) {
             scope.launch {
-                runtime.startXServer(display = 0)
-                watcher.start(scope, display = 0)
+                compositorProcess = runtime.startCompositor(onLine = watcher::onCompositorLine)
             }
         }
     }
@@ -57,10 +63,11 @@ class WindowBridgeService : Service() {
 
     override fun onDestroy() {
         watcher.stop()
+        compositorProcess?.destroy()
         super.onDestroy()
     }
 
-    /** Launches a Linux GUI app inside the rootfs; its window(s) surface via [XWindowWatcher]. */
+    /** Launches a Linux GUI app inside the rootfs; its window(s) surface via [CompositorEventWatcher]. */
     fun launchLinuxApp(command: String) {
         scope.launch {
             runtime.launchAgent(
@@ -69,7 +76,7 @@ class WindowBridgeService : Service() {
                     displayName = command,
                     description = "",
                     installCmd = "",
-                    launchCmd = "DISPLAY=:0 $command",
+                    launchCmd = "${watcher.envPrefix()}$command",
                 ),
                 cwd = "/home/ailauncher",
                 onOutput = {},
@@ -78,7 +85,7 @@ class WindowBridgeService : Service() {
     }
 
     private fun buildNotification(): Notification {
-        val channelId = "ailauncher_x11_bridge"
+        val channelId = "ailauncher_wayland_bridge"
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(channelId, "Linux desktop bridge", NotificationManager.IMPORTANCE_LOW)
         )

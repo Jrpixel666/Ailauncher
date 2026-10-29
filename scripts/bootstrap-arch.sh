@@ -22,15 +22,27 @@ pacman -Sy --noconfirm archlinux-keyring
 
 # Base userland only — no kernel, no bootloader, no initramfs tooling needed under proot.
 #
-# GUI stack: Xvfb (virtual display) + icewm (lightweight WM, needed so xdotool/x11vnc see
-# proper top-level window geometry) + xdotool (window discovery) + x11vnc (serves a SINGLE
-# window, by X11 window id, as its own tiny VNC server — this is what lets AiLauncher give
-# each Linux GUI window its own Android task instead of mirroring the whole virtual screen).
+# GUI stack: wlroots + wayland(-protocols) (compositor library), xorg-xwayland (X11 app
+# compatibility hosted *inside* the Wayland compositor, not a separate X server), wayvnc
+# (exports exactly one compositor output as its own tiny VNC server — the Wayland-side
+# equivalent of `x11vnc -id <window>`, and this is what lets AiLauncher give each Linux
+# GUI window its own Android task instead of mirroring one whole virtual screen), plus
+# meson/ninja/pkgconf/pixman/libxkbcommon to build AiLauncher's own minimal compositor
+# binary (bundled as C source, see compositor/) against whatever wlroots pacman ships.
 pacman -S --noconfirm --needed \
-  base-devel git curl wget sudo nano vim tmux \
+  base-devel git curl wget sudo nano vim tmux meson ninja pkgconf \
   nodejs npm python python-pip python-pipx \
-  xorg-server-xvfb xorg-xinit xorg-xrandr dbus mesa ttf-dejavu \
-  icewm xdotool x11vnc
+  wayland wayland-protocols wlroots xorg-xwayland wayvnc \
+  pixman libxkbcommon mesa ttf-dejavu dbus
+
+# Build AiLauncher's own compositor (bundled source, copied into the rootfs by
+# ProotRuntime.installRootfs alongside this script) against the rootfs's own wlroots.
+COMPOSITOR_SRC=/root/ailauncher-compositor-src
+if [ -d "$COMPOSITOR_SRC" ]; then
+  meson setup --reconfigure "$COMPOSITOR_SRC/build" "$COMPOSITOR_SRC" --buildtype=release
+  ninja -C "$COMPOSITOR_SRC/build"
+  install -Dm755 "$COMPOSITOR_SRC/build/ailauncher-compositor" /usr/local/bin/ailauncher-compositor
+fi
 
 # Unprivileged user that the launcher runs agents and GUI apps as.
 if ! id ailauncher >/dev/null 2>&1; then

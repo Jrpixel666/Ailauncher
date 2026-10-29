@@ -13,7 +13,7 @@ import java.io.InputStreamReader
  *
  * This mirrors the approach Termux's `proot-distro` plugin uses, trimmed to just what
  * AiLauncher needs: install the rootfs once, run bootstrap-arch.sh, then exec commands
- * (agent CLIs, X11 apps) inside it as the unprivileged `ailauncher` user.
+ * (agent CLIs, Linux GUI apps) inside it as the unprivileged `ailauncher` user.
  */
 class ProotRuntime(private val context: Context) {
 
@@ -39,6 +39,9 @@ class ProotRuntime(private val context: Context) {
             asLoginUser = false,
         )
 
+        onProgress("Copying compositor source into rootfs")
+        copyCompositorSourcesIntoRootfs()
+
         onProgress("Running bootstrap-arch.sh")
         val bootstrap = File(context.filesDir, "bootstrap-arch.sh").apply {
             writeText(context.assets.open("bootstrap-arch.sh").bufferedReader().readText())
@@ -47,6 +50,21 @@ class ProotRuntime(private val context: Context) {
         runInRootfs(listOf("bash", bootstrap.absolutePath), asUser = "root")
 
         tarball.delete()
+    }
+
+    /**
+     * Copies the bundled `ailauncher-compositor` C source + meson.build (assets/compositor/)
+     * into the rootfs at /root/ailauncher-compositor-src, where bootstrap-arch.sh builds it
+     * against the rootfs's own `wlroots` package. Plain host-side file copy: no proot needed
+     * since this just places files, it doesn't execute anything inside the sandbox yet.
+     */
+    private fun copyCompositorSourcesIntoRootfs() {
+        val destDir = File(rootfsDir, "root/ailauncher-compositor-src").apply { mkdirs() }
+        context.assets.list("compositor")?.forEach { name ->
+            context.assets.open("compositor/$name").use { input ->
+                File(destDir, name).outputStream().use { output -> input.copyTo(output) }
+            }
+        }
     }
 
     fun installAgent(spec: AgentSpec, onOutput: (String) -> Unit): Result<Unit> = runCatching {
@@ -61,58 +79,44 @@ class ProotRuntime(private val context: Context) {
     }
 
     /**
-     * Starts a virtual X server + a minimal window manager (icewm) inside the rootfs.
-     * icewm is what gives `xdotool`/`x11vnc` sane top-level window geometry to key off of;
-     * without a WM, apps' windows have no decorations/stacking and window discovery via
-     * `xdotool search` is unreliable.
+     * Starts `ailauncher-compositor` (built at bootstrap time from assets/compositor/, see
+     * [copyCompositorSourcesIntoRootfs]) inside the rootfs: a minimal wlroots-based Wayland
+     * compositor on wlroots' headless backend (no DRM/GPU needed under proot) with XWayland
+     * enabled for X11 app compatibility. [onLine] receives its stdout, one `AILAUNCHER_EVENT
+     * ...` line per window/display lifecycle event — [dev.ailauncher.window.CompositorEventWatcher]
+     * is the parser for those.
      */
-    fun startXServer(display: Int = 0): Process {
+    fun startCompositor(onLine: (String) -> Unit): Process {
         return execInRootfsAsync(
             listOf(
                 "bash", "-lc",
-                "Xvfb :$display -screen 0 1280x800x24 & sleep 1 && " +
-                    "dbus-launch --exit-with-session icewm-session",
+                "mkdir -p /tmp/ailauncher-xdg && chmod 700 /tmp/ailauncher-xdg && " +
+                    "XDG_RUNTIME_DIR=/tmp/ailauncher-xdg WLR_BACKENDS=headless " +
+                    "WLR_RENDERER=pixman WLR_NO_HARDWARE_CURSORS=1 ailauncher-compositor",
             ),
             asUser = "ailauncher",
-            onOutput = { Log.d("ProotRuntime", it) },
+            onOutput = { Log.d("ProotRuntime", "compositor: $it"); onLine(it) },
         )
-    }
-
-    /** Lists currently open top-level window ids + titles via `xdotool`, on the given [display]. */
-    fun listTopLevelWindows(display: Int): List<Pair<Long, String>> {
-        val out = execInRootfsSync(
-            listOf(
-                "bash", "-lc",
-                "DISPLAY=:$display xdotool search --onlyvisible --name '' 2>/dev/null",
-            ),
-            asUser = "ailauncher",
-        )
-        return out.lines().mapNotNull { line ->
-            val id = line.trim().toLongOrNull() ?: return@mapNotNull null
-            val title = execInRootfsSync(
-                listOf("bash", "-lc", "DISPLAY=:$display xdotool getwindowname $id 2>/dev/null"),
-                asUser = "ailauncher",
-            ).trim()
-            id to title
-        }
     }
 
     /**
-     * Serves exactly one X11 window (by [windowId]) as its own tiny VNC server on
-     * 127.0.0.1:[port], via `x11vnc -id`. This — not a whole-screen VNC/RDP session — is
-     * what lets each Linux GUI window map onto its own Android task: the Kotlin-side RFB
-     * client in [dev.ailauncher.window.XWindowSurfaceView] connects to exactly that port and
-     * sees exactly that one window's framebuffer.
+     * Serves exactly one compositor output (by [outputName], e.g. "HEADLESS-3") as its own
+     * tiny VNC server on 127.0.0.1:[port], via `wayvnc -o <output>`. This — not a whole-screen
+     * VNC/RDP session — is what lets each Linux GUI window map onto its own Android task: the
+     * compositor gives every bridged window a dedicated headless output (see
+     * ailauncher-compositor.c), and the Kotlin-side RFB client in
+     * [dev.ailauncher.window.XWindowSurfaceView] connects to exactly this port and sees exactly
+     * that one window's framebuffer.
      */
-    fun exportWindowAsVnc(display: Int, windowId: Long, port: Int): Process {
+    fun exportOutputAsVnc(outputName: String, port: Int): Process {
         return execInRootfsAsync(
             listOf(
                 "bash", "-lc",
-                "x11vnc -display :$display -id 0x${windowId.toString(16)} " +
-                    "-rfbport $port -localhost -forever -shared -noxdamage -nopw -quiet",
+                "XDG_RUNTIME_DIR=/tmp/ailauncher-xdg WAYLAND_DISPLAY=wayland-1 " +
+                    "wayvnc -o $outputName 127.0.0.1 $port",
             ),
             asUser = "ailauncher",
-            onOutput = { Log.d("ProotRuntime", "x11vnc[$windowId]: $it") },
+            onOutput = { Log.d("ProotRuntime", "wayvnc[$outputName]: $it") },
         )
     }
 
@@ -154,7 +158,11 @@ class ProotRuntime(private val context: Context) {
             add("HOME=/home/$asUser")
             add("USER=$asUser")
             add("PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin")
-            add("DISPLAY=:0")
+            // No static DISPLAY/WAYLAND_DISPLAY here: ailauncher-compositor assigns its
+            // Wayland socket name and XWayland display number at its own startup (reported
+            // via its AILAUNCHER_EVENT WAYLAND/XWAYLAND lines), so callers that need either
+            // — see WindowBridgeService.launchLinuxApp — prefix the command itself with
+            // whichever one is current instead of relying on a value baked in here.
             add("/bin/su"); add("-"); add(asUser); add("-c")
             add(cmd.joinToString(" ") { it })
         }

@@ -11,9 +11,9 @@ import dev.ailauncher.window.rfb.RfbClient
 import kotlin.concurrent.thread
 
 /**
- * Renders a single bridged X11 window's framebuffer into this Android Surface, and
- * forwards touch input back to it, by speaking RFB (VNC) to the per-window `x11vnc`
- * server [WindowBridgeService]/[XWindowWatcher] started for it on 127.0.0.1:[port].
+ * Renders a single bridged Linux window's framebuffer into this Android Surface, and
+ * forwards touch input back to it, by speaking RFB (VNC) to the per-window `wayvnc`
+ * server [WindowBridgeService]/[CompositorEventWatcher] started for it on 127.0.0.1:[port].
  *
  * One [RfbClient] per view == one window's pixels, scaled to fit the Activity's current
  * size; touch coordinates are mapped back into the remote window's own coordinate space

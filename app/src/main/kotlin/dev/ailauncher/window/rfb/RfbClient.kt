@@ -7,14 +7,20 @@ import java.io.DataOutputStream
 import java.net.Socket
 
 /**
- * Minimal RFB (VNC, RFC 6143) client, just enough to drive one `x11vnc -id <window>`
+ * Minimal RFB (VNC, RFC 6143) client, just enough to drive one `wayvnc -o <output>`
  * server per bridged Linux window: version handshake, "None"/"VNC Authentication"
  * security, Raw-encoding framebuffer updates into a [Bitmap], and pointer/key input.
  *
  * Deliberately not general-purpose (no Tight/Hextile/ZRLE, no clipboard, no resize):
- * `x11vnc -id` serves a single fixed-size window and AiLauncher only ever talks to
- * servers it spawned itself on 127.0.0.1, so the simplest correct subset of the
- * protocol is enough and keeps this dependency-free (no NDK, no third-party VNC lib).
+ * `wayvnc -o <output>` serves a single fixed-size compositor output and AiLauncher only
+ * ever talks to servers it spawned itself on 127.0.0.1, so the simplest correct subset of
+ * the protocol is enough and keeps this dependency-free (no NDK, no third-party VNC lib).
+ *
+ * Risk to validate on a real device: this assumes the installed wayvnc/neatvnc build
+ * supports the Raw encoding as a fallback when the client only advertises Raw (it isn't
+ * mandated by RFC 6143 that a server support Raw specifically if it prefers something
+ * else). If a given wayvnc build only speaks Tight, this client needs a Tight decoder
+ * added — see README's "Known trade-offs".
  */
 class RfbClient(private val host: String, private val port: Int) {
 
@@ -94,8 +100,12 @@ class RfbClient(private val host: String, private val port: Int) {
         output.writeByte(chosen)
         output.flush()
         if (chosen == SECURITY_VNC_AUTH) {
-            // x11vnc is started with -nopw by AiLauncher, so this path isn't exercised in
-            // practice; left correct-by-construction rather than unreachable.
+            // AiLauncher's wayvnc instances are started with no password/TLS config and only
+            // ever reached from this process over 127.0.0.1, so this path isn't expected to be
+            // exercised in practice; left correct-by-construction rather than unreachable.
+            // (Validate on-device: if the installed wayvnc defaults to requiring a config
+            // file/TLS cert rather than falling back to "None" security, exportOutputAsVnc's
+            // wayvnc invocation needs an explicit --disable-auth-equivalent flag added.)
             ByteArray(16).also { input.readFully(it) } // challenge, ignored: no password configured
             output.write(ByteArray(16))
             output.flush()

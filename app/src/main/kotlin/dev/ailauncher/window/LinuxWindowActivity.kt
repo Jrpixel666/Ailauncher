@@ -4,16 +4,17 @@ import android.app.Activity
 import android.os.Bundle
 
 /**
- * One instance of this Activity == one bridged Linux (X11) top-level window == one entry
- * in Android Recents, independent of AiLauncher's own task (see android:taskAffinity=""
- * and documentLaunchMode="always" on this Activity in AndroidManifest.xml, plus
- * FLAG_ACTIVITY_NEW_DOCUMENT used when it's started from [XWindowWatcher]).
+ * One instance of this Activity == one bridged Linux top-level window (native Wayland or an
+ * XWayland-hosted X11 app) == one entry in Android Recents, independent of AiLauncher's own
+ * task (see android:taskAffinity="" and documentLaunchMode="always" on this Activity in
+ * AndroidManifest.xml, plus FLAG_ACTIVITY_NEW_DOCUMENT used when it's started from
+ * [CompositorEventWatcher]).
  *
- * It renders the window by speaking RFB/VNC to the dedicated `x11vnc -id <window>`
- * server [XWindowWatcher] started for just this one window, on 127.0.0.1:[EXTRA_VNC_PORT].
- * Its title/icon shown in Recents is taken from that window's own X11 WM_NAME, via
- * setTaskDescription, so each Recents card reads as the Linux app itself rather than as
- * "AiLauncher".
+ * It renders the window by speaking RFB/VNC to the dedicated `wayvnc -o <output>` server
+ * [CompositorEventWatcher] started for just this one window's own compositor output, on
+ * 127.0.0.1:[EXTRA_VNC_PORT]. Its title/icon shown in Recents is taken from that window's own
+ * title, via setTaskDescription, so each Recents card reads as the Linux app itself rather
+ * than as "AiLauncher".
  */
 class LinuxWindowActivity : Activity() {
 
