@@ -21,10 +21,16 @@ pacman-key --populate archlinux
 pacman -Sy --noconfirm archlinux-keyring
 
 # Base userland only — no kernel, no bootloader, no initramfs tooling needed under proot.
+#
+# GUI stack: Xvfb (virtual display) + icewm (lightweight WM, needed so xdotool/x11vnc see
+# proper top-level window geometry) + xdotool (window discovery) + x11vnc (serves a SINGLE
+# window, by X11 window id, as its own tiny VNC server — this is what lets AiLauncher give
+# each Linux GUI window its own Android task instead of mirroring the whole virtual screen).
 pacman -S --noconfirm --needed \
   base-devel git curl wget sudo nano vim tmux \
   nodejs npm python python-pip python-pipx \
-  xorg-server-xvfb xorg-xinit dbus mesa ttf-dejavu
+  xorg-server-xvfb xorg-xinit xorg-xrandr dbus mesa ttf-dejavu \
+  icewm xdotool x11vnc
 
 # Unprivileged user that the launcher runs agents and GUI apps as.
 if ! id ailauncher >/dev/null 2>&1; then

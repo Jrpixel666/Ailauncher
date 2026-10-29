@@ -60,13 +60,67 @@ class ProotRuntime(private val context: Context) {
         return execInRootfsAsync(listOf("bash", "-lc", "cd '$cwd' && ${spec.launchCmd}"), asUser = "ailauncher", onOutput = onOutput)
     }
 
-    /** Starts a virtual X server + window manager inside the rootfs; GUI apps attach to it. */
+    /**
+     * Starts a virtual X server + a minimal window manager (icewm) inside the rootfs.
+     * icewm is what gives `xdotool`/`x11vnc` sane top-level window geometry to key off of;
+     * without a WM, apps' windows have no decorations/stacking and window discovery via
+     * `xdotool search` is unreliable.
+     */
     fun startXServer(display: Int = 0): Process {
         return execInRootfsAsync(
-            listOf("bash", "-lc", "Xvfb :$display -screen 0 1280x800x24 & sleep 1 && dbus-launch --exit-with-session"),
+            listOf(
+                "bash", "-lc",
+                "Xvfb :$display -screen 0 1280x800x24 & sleep 1 && " +
+                    "dbus-launch --exit-with-session icewm-session",
+            ),
             asUser = "ailauncher",
             onOutput = { Log.d("ProotRuntime", it) },
         )
+    }
+
+    /** Lists currently open top-level window ids + titles via `xdotool`, on the given [display]. */
+    fun listTopLevelWindows(display: Int): List<Pair<Long, String>> {
+        val out = execInRootfsSync(
+            listOf(
+                "bash", "-lc",
+                "DISPLAY=:$display xdotool search --onlyvisible --name '' 2>/dev/null",
+            ),
+            asUser = "ailauncher",
+        )
+        return out.lines().mapNotNull { line ->
+            val id = line.trim().toLongOrNull() ?: return@mapNotNull null
+            val title = execInRootfsSync(
+                listOf("bash", "-lc", "DISPLAY=:$display xdotool getwindowname $id 2>/dev/null"),
+                asUser = "ailauncher",
+            ).trim()
+            id to title
+        }
+    }
+
+    /**
+     * Serves exactly one X11 window (by [windowId]) as its own tiny VNC server on
+     * 127.0.0.1:[port], via `x11vnc -id`. This — not a whole-screen VNC/RDP session — is
+     * what lets each Linux GUI window map onto its own Android task: the Kotlin-side RFB
+     * client in [dev.ailauncher.window.XWindowSurfaceView] connects to exactly that port and
+     * sees exactly that one window's framebuffer.
+     */
+    fun exportWindowAsVnc(display: Int, windowId: Long, port: Int): Process {
+        return execInRootfsAsync(
+            listOf(
+                "bash", "-lc",
+                "x11vnc -display :$display -id 0x${windowId.toString(16)} " +
+                    "-rfbport $port -localhost -forever -shared -noxdamage -nopw -quiet",
+            ),
+            asUser = "ailauncher",
+            onOutput = { Log.d("ProotRuntime", "x11vnc[$windowId]: $it") },
+        )
+    }
+
+    private fun execInRootfsSync(cmd: List<String>, asUser: String): String {
+        val process = ProcessBuilder(buildProotCommand(asUser, cmd)).redirectErrorStream(true).start()
+        val output = process.inputStream.bufferedReader().readText()
+        process.waitFor()
+        return output
     }
 
     private fun runInRootfs(cmd: List<String>, asUser: String, onOutput: (String) -> Unit = {}) {
@@ -76,8 +130,18 @@ class ProotRuntime(private val context: Context) {
     }
 
     private fun execInRootfsAsync(cmd: List<String>, asUser: String, onOutput: (String) -> Unit): Process {
+        val process = ProcessBuilder(buildProotCommand(asUser, cmd)).redirectErrorStream(true).start()
+        Thread {
+            BufferedReader(InputStreamReader(process.inputStream)).useLines { lines ->
+                lines.forEach(onOutput)
+            }
+        }.start()
+        return process
+    }
+
+    private fun buildProotCommand(asUser: String, cmd: List<String>): List<String> {
         val prootBin = File(binDir, "proot").absolutePath
-        val fullCmd = buildList {
+        return buildList {
             add(prootBin)
             add("-0") // fake root inside the sandbox, still unprivileged on the host
             add("-r"); add(rootfsDir.absolutePath)
@@ -90,16 +154,10 @@ class ProotRuntime(private val context: Context) {
             add("HOME=/home/$asUser")
             add("USER=$asUser")
             add("PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin")
+            add("DISPLAY=:0")
             add("/bin/su"); add("-"); add(asUser); add("-c")
             add(cmd.joinToString(" ") { it })
         }
-        val process = ProcessBuilder(fullCmd).redirectErrorStream(true).start()
-        Thread {
-            BufferedReader(InputStreamReader(process.inputStream)).useLines { lines ->
-                lines.forEach(onOutput)
-            }
-        }.start()
-        return process
     }
 
     private fun runProot(args: List<String>, asLoginUser: Boolean) {

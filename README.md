@@ -57,27 +57,36 @@ in the launcher's third tab; it binds to that service and streams agent stdout/s
 host arbitrary third-party widgets, since only the default launcher is allowed to bind
 them.
 
-**Linux GUI apps as native Android tasks.** `WindowBridgeService` starts an `Xvfb` +
-window manager inside the rootfs. `XWindowWatcher` is meant to listen to that WM's window
-create/destroy/title event stream and, per top-level window, launch one
-`LinuxWindowActivity` with `FLAG_ACTIVITY_NEW_DOCUMENT` against an Activity declared with
-`android:taskAffinity=""` and `documentLaunchMode="always"` — that combination is what
-gives each bridged window its own independent card in Recents instead of stacking onto
-AiLauncher's own task, the same trick Termux:X11 and Winlator rely on.
-`XWindowSurfaceView` is where that window's pixels get composited onto an Android
-`Surface` and where touch input gets translated back into X11 events.
+**Linux GUI apps as native Android tasks.** `WindowBridgeService` starts `Xvfb` + `icewm`
+inside the rootfs. `XWindowWatcher` polls for top-level windows via `xdotool` every 1.5s
+and, per *new* window, starts a dedicated `x11vnc -id <window>` server that exports just
+that one window's framebuffer on its own loopback port (`ProotRuntime.exportWindowAsVnc`)
+— this is the key trick that lets one window map onto one Android task, rather than
+mirroring the whole virtual screen. It then launches one `LinuxWindowActivity` with
+`FLAG_ACTIVITY_NEW_DOCUMENT` against an Activity declared with `android:taskAffinity=""`
+and `documentLaunchMode="always"` — that combination is what gives each bridged window
+its own independent card in Recents instead of stacking onto AiLauncher's own task, the
+same effect Termux:X11 and Winlator rely on (achieved here without any NDK/JNI). That
+Activity's `XWindowSurfaceView` speaks RFB to that one port via `RfbClient` — a small,
+dependency-free Kotlin implementation of the VNC wire protocol (version/security
+handshake, Raw-encoding framebuffer updates, pointer/key events) — to draw the window
+into a `SurfaceView` and forward touch input back to it. When the window closes, its
+`x11vnc` process and RFB socket go away together, which the Activity detects and uses to
+finish itself (`android:autoRemoveFromRecents="true"` then drops its Recents card).
 
-### What's stubbed vs. wired up
+### Known trade-offs
 
-The Activity/task plumbing for the Recents behavior (manifest flags, `taskAffinity`,
-`FLAG_ACTIVITY_NEW_DOCUMENT`, `setTaskDescription` from the X window's own title) is
-fully wired. The actual pixel bridge — an embedded XCB/X11 client compositing one window
-onto a `SurfaceView` and forwarding input, plus hooking a specific WM's IPC for
-create/destroy events — is marked `TODO(window-bridge)` in `XWindowWatcher` and
-`XWindowSurfaceView`. That layer is inherently native/NDK work tied to whichever X server
-and WM `bootstrap-arch.sh` ends up shipping, so it's left as the next concrete step rather
-than guessed at here; everything above it (service lifecycle, per-window task creation,
-input/surface callback shape) is ready for that code to plug into.
+- **Polling, not event-driven.** `XWindowWatcher` polls rather than hooking the window
+  manager's own IPC, so there's up to ~1.5s latency before a freshly opened window gets
+  its own task. Swapping in an event-driven watcher is a drop-in replacement behind the
+  same `onWindowCreated`/`onWindowDestroyed` calls.
+- **`RfbClient` only speaks Raw encoding.** Correct and simple, but not bandwidth-efficient
+  for high-motion content; fine for the kind of GUI tools (terminals, editors, file
+  managers) agent workflows mostly spawn. Hextile/ZRLE support would be the natural next
+  upgrade if video-heavy apps become a priority.
+- **Input is pointer-only today.** `RfbClient.sendKey` exists and is wired for a future
+  on-screen/physical keyboard bridge, but `XWindowSurfaceView` doesn't yet forward Android
+  key events to it.
 
 ## Building
 

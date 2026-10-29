@@ -2,7 +2,6 @@ package dev.ailauncher.window
 
 import android.app.Activity
 import android.os.Bundle
-import android.widget.FrameLayout
 
 /**
  * One instance of this Activity == one bridged Linux (X11) top-level window == one entry
@@ -10,23 +9,24 @@ import android.widget.FrameLayout
  * and documentLaunchMode="always" on this Activity in AndroidManifest.xml, plus
  * FLAG_ACTIVITY_NEW_DOCUMENT used when it's started from [XWindowWatcher]).
  *
- * Its title/icon shown in Recents is taken from the bridged window's own X11 WM_NAME,
- * via setTaskDescription, so each Recents card reads as the Linux app itself rather than
- * as "AiLauncher".
+ * It renders the window by speaking RFB/VNC to the dedicated `x11vnc -id <window>`
+ * server [XWindowWatcher] started for just this one window, on 127.0.0.1:[EXTRA_VNC_PORT].
+ * Its title/icon shown in Recents is taken from that window's own X11 WM_NAME, via
+ * setTaskDescription, so each Recents card reads as the Linux app itself rather than as
+ * "AiLauncher".
  */
 class LinuxWindowActivity : Activity() {
 
-    private var windowId: Long = -1
     private lateinit var surface: XWindowSurfaceView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        windowId = intent.getLongExtra(EXTRA_WINDOW_ID, -1)
+        val port = intent.getIntExtra(EXTRA_VNC_PORT, -1)
         val title = intent.getStringExtra(EXTRA_TITLE) ?: "Linux app"
 
         setTaskDescription(android.app.ActivityManager.TaskDescription(title))
 
-        surface = XWindowSurfaceView(this, windowId) { finish() }
+        surface = XWindowSurfaceView(this, port) { finish() }
         setContentView(surface)
     }
 
@@ -37,6 +37,7 @@ class LinuxWindowActivity : Activity() {
 
     companion object {
         const val EXTRA_WINDOW_ID = "window_id"
+        const val EXTRA_VNC_PORT = "vnc_port"
         const val EXTRA_TITLE = "title"
     }
 }

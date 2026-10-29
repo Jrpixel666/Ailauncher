@@ -16,21 +16,22 @@ import kotlinx.coroutines.launch
 /**
  * Bridges the Xvfb display running inside the proot Arch rootfs onto the Android side.
  *
- * Mechanism (same family of trick as Termux:X11 / Winlator):
- *  1. A lightweight X11 window manager (herbstluftwm) runs inside the rootfs and reports
- *     window create/destroy/title/geometry events over its IPC socket.
- *  2. [XWindowWatcher] listens for those events and, for every new top-level window,
- *     starts one [dev.ailauncher.window.LinuxWindowActivity] instance carrying that
- *     window's id, using FLAG_ACTIVITY_NEW_DOCUMENT + android:taskAffinity="" so the
- *     system gives it its own independent entry in Recents instead of stacking it onto
- *     AiLauncher's own task.
- *  3. Each LinuxWindowActivity renders that one X window's pixels via a local X11 client
- *     (embedded, not shelled out) into a SurfaceView, and forwards touch/key input back
- *     to the same window over the X protocol — so from the user's point of view the Linux
- *     GUI app behaves like any other native Android app/task.
+ * Mechanism (same family of trick as Termux:X11 / Winlator, adapted to avoid any NDK/JNI):
+ *  1. Xvfb + icewm run inside the rootfs as the virtual display + window manager.
+ *  2. [XWindowWatcher] polls for top-level windows via `xdotool` and, per new window,
+ *     starts a dedicated `x11vnc -id <window>` server that exports just that one
+ *     window's framebuffer on its own loopback port.
+ *  3. It then starts one [dev.ailauncher.window.LinuxWindowActivity] for that window,
+ *     using FLAG_ACTIVITY_NEW_DOCUMENT + android:taskAffinity="" so the system gives it
+ *     its own independent entry in Recents instead of stacking it onto AiLauncher's own
+ *     task.
+ *  4. That Activity's [dev.ailauncher.window.XWindowSurfaceView] speaks RFB (a small
+ *     pure-Kotlin client, [dev.ailauncher.window.rfb.RfbClient]) to that one port to
+ *     render the window and forward touch input — so from the user's point of view the
+ *     Linux GUI app behaves like any other native Android app/task.
  *
- * This service just owns the lifecycle of the X server + window manager + watcher; it does
- * not render anything itself.
+ * This service just owns the lifecycle of the X server + watcher; it does not render
+ * anything itself.
  */
 class WindowBridgeService : Service() {
 
@@ -47,12 +48,17 @@ class WindowBridgeService : Service() {
         if (runtime.isInstalled) {
             scope.launch {
                 runtime.startXServer(display = 0)
-                watcher.start(display = 0)
+                watcher.start(scope, display = 0)
             }
         }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onDestroy() {
+        watcher.stop()
+        super.onDestroy()
+    }
 
     /** Launches a Linux GUI app inside the rootfs; its window(s) surface via [XWindowWatcher]. */
     fun launchLinuxApp(command: String) {
